@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<title>Petting the fur</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link rel="stylesheet" type="text/css" href="../css/style_no_stats.css">
+		<style type="text/css">
+			body {
+				background:#000000;
+			}
+		</style>
+	</head>
+
+	<body>
+
+		<script src="three.min.js"></script>
+
+		<script type="info.js"></script>
+
+		<script type="x-shader/x-vertex" id="vertexshader">
+
+			uniform vec2 uPos;
+			uniform float offset;
+			uniform float globalTime;
+			uniform vec3 effector;
+			uniform vec3 effectorPosition;
+
+			varying vec2 vUv;
+			varying vec3 vNormal;
+
+			const float spacing = 15.0;
+
+			vec3 gravity = vec3(0.0,0.0,0.0);
+			vec3 forceDirection = vec3(0.0,0.0,0.0);
+
+			void main() {
+
+				vec3 displacement = vec3(0.0,0.0,0.0);
+
+				forceDirection.x = sin(globalTime+position.x*0.03) * 0.3;
+				forceDirection.y = cos(globalTime*0.7+position.y*0.02) * 0.3;
+				forceDirection.z = sin(globalTime*0.7+position.y*0.02) * 0.3;
+				
+				vec3 dif = position - effectorPosition;
+				float distance = dif.x * dif.x + dif.y * dif.y + dif.z * dif.z;
+				float invDistance = max(0.0, 4000.0-distance) / 4000.0;
+				gravity = (effector*4.5)*pow(invDistance, 2.0);
+
+				displacement = gravity + forceDirection;
+				float displacementFactor = pow(offset, 1.5);
+
+				vec3 aNormal = normal;
+				aNormal.xyz += displacement*displacementFactor;
+
+				vec3 animated = vec3( position.x, position.y, position.z )+(normalize(aNormal)*offset*spacing);
+
+
+				vNormal = normalize(normal+aNormal*0.3);
+
+
+				vUv = vec2( uv.x*20.0, uv.y*15.0 );
+
+				vec4 mvPosition = modelViewMatrix * vec4( animated, 1.0 );
+
+				gl_Position = projectionMatrix * mvPosition;
+
+			}
+
+		</script>
+
+		<script type="x-shader/x-fragment" id="fragmentshader">
+
+			uniform sampler2D hairMap;
+			uniform sampler2D colorMap;
+			uniform vec3 color;
+			uniform float offset;
+
+			varying vec3 vNormal;
+			varying vec2 vUv;
+
+			void main() {
+
+				vec4 hairColor = texture2D(hairMap, vec2(vUv.s, vUv.t));
+				vec4 col = texture2D(colorMap, vec2(vUv.s*0.05, vUv.t*0.06));
+
+
+				float depth = gl_FragCoord.z / gl_FragCoord.w;
+				float near = 100.0;
+				float far = 300.0;
+				float depthcolor = 1.0 - smoothstep( near, far, depth );
+
+				if (hairColor.a <= 0.0 || hairColor.g < offset) {
+					discard;
+				}
+
+				float shadow = mix(0.0,hairColor.b*1.2,offset);
+
+				// light
+				vec3 light = vec3(0.1,0.9,-0.5);
+				float d = pow(max(0.05,dot(vNormal.xyz, light))*2.75, 1.6);
+
+				gl_FragColor = vec4(color*col.xyz*d*shadow*depthcolor, 1.0-offset);
+			
+			}
+
+		</script>
+
+
+		<script>
+
+			var container;
+
+			var camera, scene, renderer;
+
+			var has_gl = false;
+
+			var delta;
+			var time;
+			var oldTime;
+
+			var meshes = [];
+
+			var texture;
+			var color;
+
+			var mouse = new THREE.Vector2(0,1);
+			var projector = new THREE.Projector();
+			var raycaster = new THREE.Raycaster();
+
+			var effector = new THREE.Vector3(0,0,0);
+
+			var cube;
+			var collisionMesh;
+
+			var touchDevice = ( ('ontouchstart' in document) || (navigator.userAgent.match(/ipad|iphone|android/i) != null) );
+			var scaleRatio = 1;
+			if (touchDevice) scaleRatio = 3;
+
+			document.addEventListener( 'mousemove', onMouseMove, false );
+			document.addEventListener( 'touchmove', onTouchMove, false );
+
+			init();
+
+			function init() {
+
+				container = document.createElement( 'div' );
+				document.body.appendChild( container );
+
+				scene = new THREE.Scene();
+				
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 1000 );
+				camera.position.z = 120;
+				camera.position.y = 100;
+				camera.lookAt(scene.position);
+				scene.add( camera );
+
+				var geo = new THREE.PlaneGeometry(64,64);
+				geo.applyMatrix( new THREE.Matrix4().makeRotationFromEuler( new THREE.Vector3( Math.PI/2, -Math.PI, 0 ) ) );
+				
+				cube = new THREE.Mesh( geo, new THREE.MeshBasicMaterial({map: THREE.ImageUtils.loadTexture( "arrow.png"), transparent: true, opacity: 0.25}) );
+				cube.position.z = 50;
+				cube.renderDepth = -100;
+				
+				scene.add(cube);
+
+				color = THREE.ImageUtils.loadTexture( "leopard.jpg", undefined, animate);
+				color.wrapS = color.wrapT = THREE.RepeatWrapping;
+
+				texture = new THREE.Texture( generateTexture() );
+				texture.needsUpdate = true;
+				texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+
+
+				var plane = new THREE.PlaneGeometry(384, 256, 24, 16);
+				plane.applyMatrix( new THREE.Matrix4().makeRotationFromEuler( new THREE.Vector3( -Math.PI/2, 0, 0 ) ) );
+
+				for (var i = 0; i < plane.vertices.length; i++) {
+					var x = plane.vertices[i].x;
+					var z = plane.vertices[i].z;
+
+					plane.vertices[i].y += Math.sin(x/60)*10 + Math.cos(z/70)*20;
+				}
+
+				plane.computeFaceNormals();
+				plane.computeVertexNormals();
+
+				meshLoaded(plane);
+
+				try {
+					// renderer
+					renderer = new THREE.WebGLRenderer({antialias: false});
+					renderer.setSize( window.innerWidth/scaleRatio, window.innerHeight/scaleRatio );
+
+					texture.anisotropy = renderer.getMaxAnisotropy();
+
+					if (scaleRatio > 1) {
+						renderer.domElement.style.position = "absolute";
+						renderer.domElement.style.top = "0px";
+						renderer.domElement.style.left = "0px";
+
+						renderer.domElement.style.webkitTransform = "scale3d("+scaleRatio+", "+scaleRatio+", 1)";
+						renderer.domElement.style.webkitTransformOrigin = "0 0 0";
+						renderer.domElement.style.transform = "scale3d("+scaleRatio+", "+scaleRatio+", 1)";
+						renderer.domElement.style.transformOrigin = "0 0 0";				
+					}
+
+					window.addEventListener( 'resize', onWindowResize, false );
+
+					container.appendChild( renderer.domElement );
+					container.style.cursor = "url(hidden.png),pointer";
+
+					container.appendChild( renderer.domElement );
+					has_gl = true;
+				}
+				catch (e) {
+					// need webgl
+					document.getElementById('info').innerHTML = "<P><BR><B>Note.</B> You need a modern browser that supports WebGL for this to run the way it is intended.<BR>For example. <a href='http://www.google.com/landing/chrome/beta/' target='_blank'>Google Chrome 9+</a> or <a href='http://www.mozilla.com/firefox/beta/' target='_blank'>Firefox 4+</a>.<BR><BR>If you are already using one of those browsers and still see this message, it's possible that you<BR>have old blacklisted GPU drivers. Try updating the drivers for your graphic card.<BR>Or try to set a '--ignore-gpu-blacklist' switch for the browser.</P><CENTER><BR><img src='../general/WebGL_logo.png' border='0'></CENTER>";
+					document.getElementById('info').style.display = "block";
+					return;
+				}
+
+			}
+
+			function onWindowResize ( event ) {
+
+				var w = window.innerWidth;
+				var h = window.innerHeight;
+
+				renderer.setSize( w/scaleRatio, h/scaleRatio );
+
+				camera.aspect = w / h;
+				camera.updateProjectionMatrix();
+
+			}
+
+			function onMouseMove ( event ) {
+
+				event.preventDefault();
+
+				mouse.x = ( event.clientX / window.innerWidth ) * 2 - 1;
+				mouse.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
+
+			}
+
+			function onTouchMove ( event ) {
+
+				event.preventDefault();
+
+				mouse.x = ( event.touches[0].clientX / window.innerWidth ) * 2 - 1;
+				mouse.y = - ( event.touches[0].clientY / window.innerHeight ) * 2 + 1;
+
+			}
+
+			function meshLoaded( geometry ) {
+
+				var shells = 40;
+				if (touchDevice) shells = 20;
+
+
+				for (var i = 0; i < shells; i++) {
+
+					var attributes = {};
+
+					var uniforms = {
+
+						color:      { type: "c", value: new THREE.Color( 0xffffff ) },
+						hairMap:    { type: "t", value: texture },
+						colorMap:    { type: "t", value: color },
+						offset:	{ type: "f", value: i/shells },
+						globalTime:	{ type: "f", value: 0.0 },
+						effector: 	{ type: "v3", value: effector },
+						effectorPosition: 	{ type: "v3", value: cube.position },
+
+					};
+
+					var material = new THREE.ShaderMaterial( {
+
+						uniforms: 		uniforms,
+						attributes:     attributes,
+						vertexShader:   document.getElementById( 'vertexshader' ).textContent,
+						fragmentShader: document.getElementById( 'fragmentshader' ).textContent,
+
+						transparent: true,
+
+					});
+
+
+					var mesh =  new THREE.Mesh(geometry, material);
+					mesh.position.z = -40;
+					mesh.matrixAutoUpdate = false;
+					mesh.updateMatrix();
+					scene.add(mesh);
+
+					meshes.push(mesh);
+
+				}
+
+
+				collisionMesh =  new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({wireframe: true, transparent: true, opacity: 0}) );
+				collisionMesh.position.y = 12;
+				collisionMesh.position.z = -40;
+				collisionMesh.renderDepth = -200;
+				scene.add(collisionMesh);
+
+			}
+
+			function generateTexture() {
+
+				var canvas = document.createElement( 'canvas' );
+				canvas.width = 256;
+				canvas.height = 256;
+
+				var context = canvas.getContext( '2d' );
+
+				for ( var i = 0; i < 20000; ++i ) {
+
+					// r = hair 1/0
+					// g = length
+					// b = darkness
+					context.fillStyle = "rgba(255," + Math.floor( Math.random() * 255 ) + ","+ Math.floor( Math.random() * 255 ) +",1)";
+					
+					context.fillRect( ( Math.random() * canvas.width ), ( Math.random() * canvas.height ), 1, 4 );
+					
+				}
+
+				return canvas;
+
+			}
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				render();
+
+			}
+
+			function render() {
+
+				time = Date.now();
+				delta = time - oldTime;
+				oldTime = time;
+
+				if (isNaN(delta) || delta > 1000 || delta == 0 ) {
+					delta = 1000/60;
+				}
+
+				var optimalDivider = delta/16;
+				var smoothing = Math.max(2, (10/optimalDivider) )
+
+				// intersection
+				var vector = new THREE.Vector3( mouse.x, mouse.y, 1 );
+				projector.unprojectVector( vector, camera );
+
+				raycaster.set( camera.position, vector.sub( camera.position ).normalize() );
+
+				var intersects = raycaster.intersectObject( collisionMesh );
+
+				if ( intersects.length > 0 ) {
+
+					var inter = intersects[0];
+
+					var toPos = inter.point;
+					cube.position.x += (toPos.x - cube.position.x)/smoothing;
+					cube.position.y += (toPos.y - cube.position.y)/smoothing;
+					cube.position.z += (toPos.z - cube.position.z)/smoothing;
+					
+					cube.lookAt(inter.point);
+
+					var toEff = inter.point.clone().sub(cube.position).normalize()
+
+					effector.x += (toEff.x - effector.x)/smoothing;
+					effector.y += (toEff.y - effector.y)/smoothing;
+					effector.z += (toEff.z - effector.z)/smoothing;
+
+
+				}
+
+				for (var i = 0; i < meshes.length; i++) {
+					meshes[i].material.uniforms.globalTime.value += delta*0.001;
+				}
+
+				if (has_gl) {
+					renderer.render( scene, camera );
+				}
+
+			}
+
+		</script>
+	</body>
+</html>
